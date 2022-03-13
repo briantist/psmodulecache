@@ -2,13 +2,20 @@ param (
    [string[]]$Module,
    [ValidateSet("KeyGen","ModulePath", "SaveModule")]
    [string]$Type,
-   [string]$Shell
+   [string]$Shell,
+   [string]$CacheSlug
 )
-$shells = $Shell.Split(",").Trim()
+$shells = $Shell.Split(",").Trim() | Sort-Object -Unique
 switch ($Type) {
    'KeyGen' {
       # all this splitting and joining accomodates for powershell and pwsh
-      Write-Output "$env:RUNNER_OS-v4.5-$($shells -join "-")-$(($Module.Split(",") -join '-').Replace(' ',''))"
+      $components = @(
+         "${CacheSlug}-".TrimStart('-')
+         $env:RUNNER_OS
+         $shells -join '-'
+         $Module.Split(",").Trim() -join '-'
+      )
+      Write-Output ($components -join '-')
    }
    'ModulePath' {
       $modules = $Module.Split(",").Trim()
@@ -50,7 +57,7 @@ switch ($Type) {
                }
             } else {
                $modpath = "/usr/local/share/powershell/Modules"
-            } 
+            }
             Write-Output "Saving module $module on $psshell to $modpath"
             $item, $version = $module.Split(":")
             if ($version) {

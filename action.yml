@@ -19,6 +19,19 @@ inputs:
     description: "Force during Save-Module"
     required: false
     default: "true"
+  cache-key-slug:
+    description: An additional user-defined value to add to the generated cache key.
+    required: false
+outputs:
+  cache-key:
+    description: The key used for the module cache.
+    value: ${{ steps.psoutput.outputs.keygen }}
+  cache-hit:
+    description: A boolean indicating whether the cache was hit or not.
+    value: ${{ steps.cacher.outputs.cache-hit }}
+  cache-valid:
+    description: A boolean indicating whether the cache was valid. Always false if cache was not hit.
+    value: ${{ steps.checker.outputs.cache-valid }}
 runs:
   using: "composite"
   steps:
@@ -31,16 +44,18 @@ runs:
 
         $inputs = [pscustomobject]@{
               ModulePath      = $modulepath
-              Modules         = ("${{ inputs.modules-to-cache }}" -split ",")
+              Modules         = ("${{ inputs.modules-to-cache }}".Split(",").Trim())
               Force           = "${{ inputs.force }}"
               AllowPrerelease = "${{ inputs.allow-prerelease }}"
               Shell           = "${{ inputs.shell }}"
           }
-        
+
+        $infopath = Join-Path $home -ChildPath cache.xml
+        $null = $inputs | Export-CliXml -Path $infopath
+
         Write-Output "::set-output name=keygen::$keygen"
         Write-Output "::set-output name=modulepath::$modulepath"
-
-        $null = $inputs | Export-CliXml -Path (Join-Path $home -ChildPath cache.xml)
+        Write-Output "::set-output name=infopath::$infopath"
 
     - name: Run module cacher action
       id: cacher
@@ -48,10 +63,32 @@ runs:
       with:
         path: ${{ steps.psoutput.outputs.modulepath }}
         key: ${{ steps.psoutput.outputs.keygen }}
+
+    - name: Check expected modules
+      id: checker
+      shell: ${{ inputs.shell }}
+      run: |
+        $cacheHit = [bool]::Parse('${{ steps.cacher.outputs.cache-hit }}')
+        $info = Import-CliXml -LiteralPath '${{ steps.psoutput.outputs.infopath }}'
+
+        $result = ${{ github.action_path }}/checker.ps1 -Module $info.Modules
+
+        if (-not $result) {
+            if ($cacheHit) {
+                Write-Output "::warning title=Invalid Cache::The cache was hit but the expected modules were not found. Consider (re)setting cache-key-slug."
+            }
+        }
+
+        $cacheValid = ConvertTo-Json -InputObject ($cacheHit -and $result)
+        $needModules = ConvertTo-Json -InputObject (-not $result)
+
+        Write-Output "::set-output name=need-modules::$needModules"
+        Write-Output "::set-output name=cache-valid::$cacheValid"
+
     - name: Install PowerShell modules
       id: finalstep
       shell: pwsh
-      if: steps.cacher.outputs.cache-hit != 'true'
+      if: fromJSON(steps.checker.outputs.need-modules)
       run: |
         Write-Output "Saving all modules"
         ${{ github.action_path }}/main.ps1 -Type SaveModule
